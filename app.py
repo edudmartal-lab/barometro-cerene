@@ -560,25 +560,27 @@ def render_dashboard_fragment(selected_period, selected_weeks):
             "les permissions du document et les secrets Streamlit."
         )
 
-
 if check_password():
-    try:
-        base_raw = load_raw_data()
-        base_cols = detect_columns(base_raw)
-        base_clean = clean_data(base_raw, base_cols)
-        base_df = apply_business_rules(base_clean)
-        st.session_state["bootstrap_data"] = (base_df, base_cols)
+    base_raw = load_raw_data()
+    base_cols = detect_columns(base_raw)
+    base_clean = clean_data(base_raw, base_cols)
+    base_df = apply_business_rules(base_clean)
+    st.session_state["bootstrap_data"] = (base_df, base_cols)
 
-        filtered_df = render_sidebar(base_df)
-        selected_period = st.session_state.get("selected_period")
-        if selected_period is None and not filtered_df.empty:
-            selected_period = filtered_df["Période"].iloc[0]
-        selected_weeks = st.session_state.get("selected_weeks", [])
+    filtered_df = render_sidebar(base_df)
 
-        render_dashboard_fragment(selected_period, selected_weeks)
+    selected_period = st.session_state.get("selected_period")
+    if selected_period is None and not filtered_df.empty:
+        selected_period = filtered_df["Période"].iloc[0]
+
+    selected_weeks = st.session_state.get("selected_weeks", [])
+
+    render_dashboard_fragment(selected_period, selected_weeks)
+
 
 try:
-    run_app()
+    if check_password():
+        main_app()
 except Exception as e:
     st.title("🎓 Pilotage Vie Scolaire")
     st.error(
