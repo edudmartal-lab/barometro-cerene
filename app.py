@@ -577,7 +577,9 @@ if check_password():
 
         render_dashboard_fragment(selected_period, selected_weeks)
 
-   except Exception as e:
+try:
+    run_app()
+except Exception as e:
     st.title("🎓 Pilotage Vie Scolaire")
     st.error(
         "Impossible de charger les données Google Sheets. Vérifiez le nom de l'onglet, "
