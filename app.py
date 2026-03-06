@@ -577,9 +577,10 @@ if check_password():
 
         render_dashboard_fragment(selected_period, selected_weeks)
 
-    except Exception:
-        st.title("🎓 Pilotage Vie Scolaire")
-        st.error(
-            "Impossible de charger les données Google Sheets. Vérifiez le nom de l'onglet, "
-            "les permissions du document et les secrets Streamlit."
-        )
+   except Exception as e:
+    st.title("🎓 Pilotage Vie Scolaire")
+    st.error(
+        "Impossible de charger les données Google Sheets. Vérifiez le nom de l'onglet, "
+        "les permissions du document et les secrets Streamlit."
+    )
+    st.exception(e)
