@@ -102,14 +102,47 @@ def detect_columns(df):
     columns = [str(c).strip() for c in df.columns]
     df.columns = columns
 
+    def normalize(value):
+        value = str(value).strip().lower()
+        return (
+            value.replace("é", "e")
+            .replace("è", "e")
+            .replace("ê", "e")
+            .replace("ë", "e")
+            .replace("à", "a")
+            .replace("ù", "u")
+            .replace("ô", "o")
+            .replace("î", "i")
+            .replace("ï", "i")
+        )
+
     col_color = next((c for c in columns if "Couleur" in c or "Color" in c), None)
     col_eleve = next(
         (c for c in columns if "Élève" in c or "Eleve" in c or "Nom" in c), None
     )
     col_classe = next((c for c in columns if "Classe" in c or "Clase" in c), None)
     col_obs = next((c for c in columns if "Observation" in c or "Observacion" in c), None)
+
+    adult_keywords = [
+        "adulte",
+        "prof",
+        "adult",
+        "enseignant",
+        "teacher",
+        "email",
+        "e-mail",
+        "adresse e-mail",
+        "utilisateur",
+        "nom de l'adulte",
+        "nom du professeur",
+    ]
     col_adult = next(
-        (c for c in columns if "Adulte" in c or "Prof" in c or "Adult" in c), "Adulte"
+        (
+            c
+            for c in columns
+            if any(k in normalize(c) for k in adult_keywords)
+        ),
+        None,
     )
     col_date = next(
         (
@@ -321,12 +354,18 @@ def render_dashboard(df, df_f, cols):
         st.divider()
         st.subheader("🕒 Dernières observations")
 
+        adult_label = None
+        if col_adult is not None and col_adult in df_f.columns:
+            adult_label = "Adulte / enseignant"
+            df_f = df_f.copy()
+            df_f[adult_label] = df_f[col_adult]
+
         history_columns = [
             col_date,
             col_eleve,
             col_classe,
             "Couleur_Clean",
-            col_adult,
+            adult_label,
             col_obs,
         ]
         history_columns = [c for c in history_columns if c in df_f.columns and c is not None]
@@ -512,7 +551,12 @@ def render_dashboard(df, df_f, cols):
                 st.plotly_chart(fig, use_container_width=True)
 
                 st.write("**Historique**")
-                cols_show = [col_date, "Heure", "Couleur_Clean", col_adult, col_obs]
+                adult_label = None
+                if col_adult is not None and col_adult in de_full.columns:
+                    adult_label = "Adulte / enseignant"
+                    de_full[adult_label] = de_full[col_adult]
+
+                cols_show = [col_date, "Heure", "Couleur_Clean", adult_label, col_obs]
                 cols_final = [c for c in cols_show if c in de_full.columns and c is not None]
                 st.dataframe(
                     de_full.sort_values("Date_Clean", ascending=False)[cols_final],
@@ -520,8 +564,11 @@ def render_dashboard(df, df_f, cols):
                 )
 
     with t7:
-        if col_adult in df.columns:
-            c1, c2 = st.columns([1, 3])
+        st.subheader("👥 Équipe éducative")
+        st.caption("Répartition des observations par adulte / enseignant.")
+
+        if col_adult is not None and col_adult in df.columns:
+            c1, c2 = st.columns([1, 3], gap="large")
             with c1:
                 sel_p = st.selectbox("Professeur", ["Global"] + sorted(df_f[col_adult].astype(str).unique()))
             with c2:
@@ -553,6 +600,11 @@ def render_dashboard(df, df_f, cols):
                         },
                     )
                 st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info(
+                "Aucune colonne adulte/enseignant détectée dans la source actuelle. "
+                "L'onglet Équipe reste disponible, mais les graphiques ne peuvent pas être affichés."
+            )
 
 
 @st.fragment(run_every="30s")
