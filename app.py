@@ -4,7 +4,18 @@ import plotly.express as px
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
-RAW_WORKSHEET = "Form Responses 1"  # Must exactly match the Google Sheets tab name
+DEFAULT_RAW_WORKSHEET = "Form Responses 1"
+
+
+def get_raw_worksheet_name():
+    gsheets_cfg = st.secrets.get("connections", {}).get("gsheets", {})
+    worksheet = gsheets_cfg.get("worksheet")
+    if worksheet and str(worksheet).strip():
+        return str(worksheet).strip()
+    return DEFAULT_RAW_WORKSHEET
+
+
+RAW_WORKSHEET = get_raw_worksheet_name()  # Must exactly match the Google Sheets tab name
 COLOR_ORDER = ["Vert", "Jaune", "Orange", "Rouge"]
 DAYS_ORDER = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"]
 
