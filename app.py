@@ -318,6 +318,33 @@ def render_dashboard(df, df_f, cols):
             )
             st.plotly_chart(figp, use_container_width=True)
 
+        st.divider()
+        st.subheader("🕒 Dernières observations")
+
+        history_columns = [
+            col_date,
+            col_eleve,
+            col_classe,
+            "Couleur_Clean",
+            col_adult,
+            col_obs,
+        ]
+        history_columns = [c for c in history_columns if c in df_f.columns and c is not None]
+
+        latest_observations = df_f.sort_values("Date_Clean", ascending=False).head(5)
+        latest_severe = df_f[df_f["Couleur_Clean"].isin(["Orange", "Rouge"])].sort_values(
+            "Date_Clean", ascending=False
+        ).head(3)
+
+        c_latest, c_severe = st.columns(2)
+        with c_latest:
+            st.write("**5 dernières observations**")
+            st.dataframe(latest_observations[history_columns], use_container_width=True)
+
+        with c_severe:
+            st.write("**3 dernières observations graves**")
+            st.dataframe(latest_severe[history_columns], use_container_width=True)
+
     with t2:
         st.subheader("Analyse par Classe")
         df_class = (
