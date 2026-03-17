@@ -97,6 +97,27 @@ st.markdown(
     .priority-badge.urgence { background: #fee2e2; color: #991b1b; }
     .priority-badge.vigilance-renforcee { background: #ffedd5; color: #9a3412; }
     .priority-badge.a-surveiller { background: #fef9c3; color: #854d0e; }
+    .vg-block-title { margin-bottom: 4px; }
+    .vg-muted { color:#64748b; font-size:0.85rem; margin-bottom: 0.6rem; }
+    .vg-positive-card {
+        background: #f8fafc;
+        border: 1px solid #dbeafe;
+        border-left: 5px solid #16a34a;
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 10px;
+    }
+    .vg-positive-name { font-size: 1rem; font-weight: 700; color: #14532d; }
+    .vg-positive-meta { font-size: 0.84rem; color: #334155; }
+    .vg-severe-note {
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: #fff7ed;
+        border: 1px solid #fdba74;
+        color: #9a3412;
+        font-size: 0.84rem;
+        margin-bottom: 8px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -379,6 +400,66 @@ def build_priority_students(df_f, col_eleve, col_classe, top_n=5):
     return ranked
 
 
+def build_positive_signals(df_f, col_eleve, col_classe, top_n=5):
+    if df_f.empty:
+        return pd.DataFrame()
+
+    latest_date = df_f["Date_Clean"].max()
+    window_start = latest_date - pd.Timedelta(days=21)
+    recent_df = df_f[df_f["Date_Clean"] >= window_start].copy()
+    if recent_df.empty:
+        return pd.DataFrame()
+
+    summary = (
+        recent_df.groupby([col_eleve, col_classe])["Couleur_Clean"]
+        .value_counts()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
+    summary = ensure_color_columns(summary)
+
+    all_time = (
+        df_f.groupby([col_eleve, col_classe])["Couleur_Clean"]
+        .value_counts()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
+    all_time = ensure_color_columns(all_time)
+    all_time["Had_Past_Alerts"] = (all_time["Jaune"] + all_time["Orange"] + all_time["Rouge"]) > 0
+
+    last_obs = recent_df.groupby([col_eleve, col_classe], as_index=False)["Date_Clean"].max()
+    positive = summary.merge(all_time[[col_eleve, col_classe, "Had_Past_Alerts"]], on=[col_eleve, col_classe], how="left")
+    positive = positive.merge(last_obs, on=[col_eleve, col_classe], how="left").rename(columns={"Date_Clean": "Last_Observation"})
+
+    positive["Positive_Score"] = (
+        positive["Vert"] * 2
+        + (positive["Jaune"] == 0).astype(int) * 2
+        + (positive["Orange"] == 0).astype(int) * 2
+        + (positive["Rouge"] == 0).astype(int) * 3
+        + positive["Had_Past_Alerts"].astype(int)
+    )
+
+    filtered = positive[
+        (positive["Vert"] >= 3)
+        | ((positive["Vert"] >= 2) & (positive["Orange"] == 0) & (positive["Rouge"] == 0))
+    ].copy()
+    if filtered.empty:
+        return pd.DataFrame()
+
+    def positive_label(row):
+        if row["Vert"] >= 5 and row["Rouge"] == 0 and row["Orange"] == 0:
+            return "dynamique positive"
+        if row["Had_Past_Alerts"] and row["Vert"] >= 3 and row["Orange"] == 0 and row["Rouge"] == 0:
+            return "amélioration notable"
+        return "à encourager"
+
+    filtered["Positive_Label"] = filtered.apply(positive_label, axis=1)
+    return filtered.sort_values(
+        ["Positive_Score", "Vert", "Last_Observation"],
+        ascending=[False, False, False],
+    ).head(top_n)
+
+
 def format_weeks_context(weeks):
     if not weeks:
         return "Toutes les semaines disponibles"
@@ -504,43 +585,10 @@ def render_dashboard(df, df_f, cols):
         k3.metric("Jaunes", j, delta_color="off")
         k4.metric("Incidents", inc, delta="-Alertes", delta_color="inverse")
         st.divider()
-        c_main, c_pie = st.columns([2, 1])
-        with c_main:
-            st.subheader("Analyse Temporelle")
-            df_inc = df_f[df_f["Couleur_Clean"] != "Vert"]
-            if not df_inc.empty:
-                heat = df_inc.groupby(["Jour_Fr", "Heure"]).size().reset_index(name="Count")
-                fig = px.density_heatmap(
-                    heat,
-                    x="Heure",
-                    y="Jour_Fr",
-                    z="Count",
-                    color_continuous_scale="Reds",
-                    category_orders={"Jour_Fr": DAYS_ORDER},
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.success("Calme plat.")
-        with c_pie:
-            st.subheader("Répartition")
-            cts = df_f["Couleur_Clean"].value_counts()
-            figp = px.pie(
-                values=cts,
-                names=cts.index,
-                color=cts.index,
-                color_discrete_map={
-                    "Vert": "#2ecc71",
-                    "Jaune": "#f1c40f",
-                    "Orange": "#e67e22",
-                    "Rouge": "#e74c3c",
-                },
-            )
-            st.plotly_chart(figp, use_container_width=True)
 
-        st.divider()
         st.subheader("🎯 Priorités du moment")
         st.caption(
-            "Classement des élèves nécessitant une attention rapide, basé sur les observations Jaune/Orange/Rouge récentes."
+            "Classement basé sur les observations Jaune/Orange/Rouge du filtre actif, avec priorité aux signaux récents et sévères."
         )
 
         priority_df = build_priority_students(df_f, col_eleve, col_classe, top_n=5)
@@ -577,6 +625,64 @@ def render_dashboard(df, df_f, cols):
                 )
 
         st.divider()
+        c_pie, c_signals = st.columns([1, 2])
+        with c_pie:
+            st.subheader("Répartition")
+            cts = df_f["Couleur_Clean"].value_counts()
+            figp = px.pie(
+                values=cts,
+                names=cts.index,
+                color=cts.index,
+                color_discrete_map={
+                    "Vert": "#2ecc71",
+                    "Jaune": "#f1c40f",
+                    "Orange": "#e67e22",
+                    "Rouge": "#e74c3c",
+                },
+            )
+            st.plotly_chart(figp, use_container_width=True)
+        with c_signals:
+            st.subheader("Lecture rapide")
+            severe_recent = df_f[df_f["Couleur_Clean"].isin(["Orange", "Rouge"])].copy()
+            severe_count = len(severe_recent)
+            recurring_count = len(
+                df_f[df_f["Couleur_Clean"] == "Jaune"]
+                .groupby(col_eleve)
+                .size()
+                .loc[lambda x: x >= 3]
+            )
+            st.markdown(
+                f"""
+                <div class='vg-severe-note'>
+                    <b>Signal immédiat :</b> {severe_count} observation(s) Orange/Rouge sur la période filtrée.<br>
+                    <b>Signal récurrent :</b> {recurring_count} élève(s) avec au moins 3 observations Jaunes.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            recent_focus = (
+                df_f.sort_values("Date_Clean", ascending=False)
+                [["Date_Clean", col_eleve, col_classe, "Couleur_Clean"]]
+                .head(8)
+                .copy()
+            )
+            recent_focus["Date"] = recent_focus["Date_Clean"].dt.strftime("%d/%m/%Y")
+            recent_focus["Signal"] = recent_focus["Couleur_Clean"].map(
+                {
+                    "Rouge": "🔴",
+                    "Orange": "🟠",
+                    "Jaune": "🟡",
+                    "Vert": "🟢",
+                }
+            )
+            st.dataframe(
+                recent_focus[["Date", "Signal", col_eleve, col_classe, "Couleur_Clean"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        st.divider()
         st.subheader("🕒 Dernières observations")
 
         adult_label = None
@@ -603,11 +709,37 @@ def render_dashboard(df, df_f, cols):
         c_latest, c_severe = st.columns(2)
         with c_latest:
             st.write("**5 dernières observations**")
-            st.dataframe(latest_observations[history_columns], use_container_width=True)
+            st.dataframe(latest_observations[history_columns], use_container_width=True, hide_index=True)
 
         with c_severe:
             st.write("**3 dernières observations graves**")
-            st.dataframe(latest_severe[history_columns], use_container_width=True)
+            st.dataframe(latest_severe[history_columns], use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.subheader("🌱 Signaux positifs / améliorations")
+        st.caption("Élèves montrant une dynamique positive récente (sur les 3 dernières semaines disponibles).")
+
+        positive_df = build_positive_signals(df_f, col_eleve, col_classe, top_n=5)
+        if positive_df.empty:
+            st.info("Aucun signal positif marquant à afficher sur la fenêtre récente.")
+        else:
+            for _, row in positive_df.iterrows():
+                last_obs = row["Last_Observation"].strftime("%d/%m/%Y") if pd.notna(row["Last_Observation"]) else "N/A"
+                st.markdown(
+                    f"""
+                    <div class='vg-positive-card'>
+                        <div class='vg-positive-name'>{row[col_eleve]} · {row[col_classe]}</div>
+                        <div class='vg-positive-meta'>
+                            🟢 Vert: <b>{int(row['Vert'])}</b> &nbsp;•&nbsp;
+                            🟡 Jaune: <b>{int(row['Jaune'])}</b> &nbsp;•&nbsp;
+                            🟠 Orange: <b>{int(row['Orange'])}</b> &nbsp;•&nbsp;
+                            🔴 Rouge: <b>{int(row['Rouge'])}</b><br>
+                            Dernière observation: {last_obs} &nbsp;•&nbsp; <b>{row['Positive_Label']}</b>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
     with t2:
         st.subheader("Analyse par Classe")
