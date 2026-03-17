@@ -1,4 +1,7 @@
 import os
+import re
+from collections import Counter
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -7,6 +10,12 @@ from streamlit_gsheets import GSheetsConnection
 RAW_WORKSHEET = "Form Responses 1"  # Must exactly match the Google Sheets tab name
 COLOR_ORDER = ["Vert", "Jaune", "Orange", "Rouge"]
 DAYS_ORDER = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"]
+COLOR_CARD_STYLES = {
+    "Vert": ("#2ecc71", "#f0fdf4"),
+    "Jaune": ("#f1c40f", "#fefce8"),
+    "Orange": ("#e67e22", "#fff7ed"),
+    "Rouge": ("#e74c3c", "#fef2f2"),
+}
 
 # --- 1. CONFIGURACIÓN VISUAL ---
 st.set_page_config(
@@ -287,6 +296,100 @@ def ensure_color_columns(pivot_df):
     return pivot_df
 
 
+def format_weeks_context(weeks):
+    if not weeks:
+        return "Toutes les semaines disponibles"
+    ordered_weeks = sorted(int(w) for w in weeks)
+    return ", ".join([f"S{w}" for w in ordered_weeks])
+
+
+def infer_trend(student_df):
+    if len(student_df) < 6:
+        return "Tendance non lisible (historique insuffisant)."
+
+    severity_map = {"Vert": 0, "Jaune": 1, "Orange": 2, "Rouge": 3}
+    scored = student_df.copy()
+    scored["Severity"] = scored["Couleur_Clean"].map(severity_map).fillna(1)
+
+    recent_avg = scored.tail(5)["Severity"].mean()
+    previous_avg = scored.head(min(5, len(scored) - 1))["Severity"].mean()
+
+    if recent_avg <= previous_avg - 0.4:
+        return "Amélioration récente (couleurs globalement plus positives)."
+    if recent_avg >= previous_avg + 0.4:
+        return "Point de vigilance : dégradation récente observée."
+    return "Tendance globalement stable sur la période sélectionnée."
+
+
+def extract_keywords(observations):
+    stopwords = {
+        "le", "la", "les", "de", "des", "du", "un", "une", "et", "ou", "en", "dans", "sur", "avec",
+        "pour", "pas", "plus", "mais", "que", "qui", "au", "aux", "ce", "cet", "cette", "a", "à", "est",
+        "son", "sa", "ses", "elle", "il", "se", "ne", "d", "l", "tres", "très", "été", "etre", "être",
+        "faire", "fait", "fois", "car", "comme", "tout", "tous", "toute", "toutes", "pendant", "apres", "après",
+    }
+    words = []
+    for obs in observations:
+        tokens = re.findall(r"[a-zA-Zàâçéèêëîïôûùüÿñæœ'-]{3,}", str(obs).lower())
+        words.extend([w for w in tokens if w not in stopwords])
+    return [w for w, _ in Counter(words).most_common(5)]
+
+
+def build_student_summary_block(student_df, student_name, student_class, selected_period, selected_weeks, col_obs):
+    counts = student_df["Couleur_Clean"].value_counts().reindex(COLOR_ORDER, fill_value=0)
+    total = int(len(student_df))
+    trend = infer_trend(student_df)
+
+    obs_series = pd.Series(dtype=str)
+    if col_obs is not None and col_obs in student_df.columns:
+        obs_series = student_df[col_obs].dropna().astype(str)
+
+    keywords = extract_keywords(obs_series.tolist()) if not obs_series.empty else []
+    dominant_issues = ", ".join(keywords[:3]) if keywords else "Non identifié de manière fiable avec les observations actuelles."
+    positive_points = "Présence d'observations vertes régulières." if counts["Vert"] > 0 else "Peu de points positifs explicites visibles dans les saisies."
+
+    recent_rows = student_df.sort_values("Date_Clean", ascending=False).head(3)
+    notable = []
+    for _, row in recent_rows.iterrows():
+        obs_text = ""
+        if col_obs is not None and col_obs in row and pd.notna(row[col_obs]):
+            obs_text = str(row[col_obs]).strip()
+        if obs_text:
+            notable.append(f"- {row['Date_Clean'].strftime('%d/%m')} · {row['Couleur_Clean']} · {obs_text}")
+        else:
+            notable.append(f"- {row['Date_Clean'].strftime('%d/%m')} · {row['Couleur_Clean']}")
+
+    neutral_synthesis = (
+        f"Sur la période sélectionnée, {student_name} présente {total} observation(s) "
+        f"avec une répartition Vert/Jaune/Orange/Rouge de {counts['Vert']}/{counts['Jaune']}/{counts['Orange']}/{counts['Rouge']}. "
+        f"{trend} Les observations invitent à poursuivre un accompagnement éducatif structuré, "
+        f"en consolidant les points d'appui et en travaillant les situations récurrentes identifiées."
+    )
+
+    structured = {
+        "Élève": student_name,
+        "Classe": student_class,
+        "Période": selected_period or "Non précisée",
+        "Semaines": format_weeks_context(selected_weeks),
+        "Total entrées": total,
+        "Comptage couleurs": {color: int(counts[color]) for color in COLOR_ORDER},
+        "Tendance": trend,
+        "Points de vigilance récurrents (inférés)": dominant_issues,
+        "Points positifs visibles": positive_points,
+        "Dernières observations notables": "\n".join(notable) if notable else "Aucune observation notable disponible.",
+        "Synthèse éducative neutre": neutral_synthesis,
+    }
+
+    prompt = (
+        "À partir des éléments ci-dessous, rédige un profil pédagogique clair, humain et professionnel en français. "
+        "Reste neutre, factuel et orienté accompagnement éducatif. "
+        "Structure ta réponse en 4 parties : Forces, Vigilances, Évolution récente, Pistes d'action concrètes pour l'équipe.\n\n"
+        f"{structured}"
+    )
+
+    return structured, prompt
+
+
 def render_dashboard(df, df_f, cols):
     col_date = cols["date"]
     col_eleve = cols["eleve"]
@@ -523,17 +626,39 @@ def render_dashboard(df, df_f, cols):
         eleves = sorted(df[col_eleve].astype(str).unique())
         sel_eleve = st.selectbox("Rechercher un élève", eleves)
 
+        selected_period = st.session_state.get("selected_period")
+        selected_weeks = st.session_state.get("selected_weeks", [])
+
+        de_filtered = df_f[df_f[col_eleve] == sel_eleve].copy().sort_values("Date_Clean", ascending=True)
         de_full = df[df[col_eleve] == sel_eleve].copy().sort_values("Date_Clean", ascending=True)
 
-        c_evol, c_hist = st.columns([1, 2])
-        with c_evol:
-            if not de_full.empty:
-                st.metric("Total Entrées", len(de_full))
+        if de_filtered.empty:
+            st.info("Aucune observation pour cet élève sur les filtres actuellement sélectionnés.")
+        else:
+            selected_class = str(de_filtered[col_classe].dropna().astype(str).mode().iloc[0]) if col_classe in de_filtered.columns and not de_filtered[col_classe].dropna().empty else "Non renseignée"
+            color_counts = de_filtered["Couleur_Clean"].value_counts().reindex(COLOR_ORDER, fill_value=0)
+
+            st.markdown("**Synthèse rapide par couleur (période/semaines sélectionnées)**")
+            cards = st.columns(4)
+            for idx, color in enumerate(COLOR_ORDER):
+                border_color, bg_color = COLOR_CARD_STYLES[color]
+                cards[idx].markdown(
+                    f"""
+                    <div style='background:{bg_color}; border:1px solid {border_color}; border-radius:10px; padding:10px 12px;'>
+                        <div style='font-size:0.8rem; color:#475569; text-transform:uppercase; letter-spacing:0.4px;'>{color}</div>
+                        <div style='font-size:1.6rem; font-weight:700; color:#0f172a;'>{int(color_counts[color])}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            c_evol, c_hist = st.columns([1, 2])
+            with c_evol:
+                st.metric("Total Entrées (filtres actifs)", len(de_filtered))
                 dom_mois = de_full.groupby("Mois_Str")["Couleur_Clean"].agg(lambda x: x.mode().iloc[0])
                 st.write("**Dominante par Mois:**")
                 st.dataframe(dom_mois, use_container_width=True)
-        with c_hist:
-            if not de_full.empty:
+            with c_hist:
                 evol = de_full.groupby(["Semaine_Str", "Couleur_Clean"]).size().reset_index(name="Count")
                 fig = px.bar(
                     evol,
@@ -562,6 +687,23 @@ def render_dashboard(df, df_f, cols):
                     de_full.sort_values("Date_Clean", ascending=False)[cols_final],
                     use_container_width=True,
                 )
+
+            st.divider()
+            st.markdown("### 🧾 Résumé prêt à exploiter")
+            st.caption("Bloc copiable pour préparer une analyse humaine assistée par IA (sans connexion API).")
+            structured_summary, prompt_text = build_student_summary_block(
+                de_filtered,
+                sel_eleve,
+                selected_class,
+                selected_period,
+                selected_weeks,
+                col_obs,
+            )
+
+            st.markdown("**Synthèse prête pour IA**")
+            st.code(str(structured_summary), language="text")
+            st.markdown("**Prompt recommandé (copier/coller)**")
+            st.code(prompt_text, language="text")
 
     with t7:
         st.subheader("👥 Équipe éducative")
