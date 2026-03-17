@@ -64,6 +64,39 @@ st.markdown(
     }
     .alert-ln { background-color: #fefce8; border: 1px solid #eab308; color: #854d0e; padding: 15px; border-radius: 8px; margin-bottom: 10px; }
     .alert-diego { background-color: #fef2f2; border: 1px solid #ef4444; color: #991b1b; padding: 15px; border-radius: 8px; margin-bottom: 10px; }
+    .priority-card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-left: 5px solid #94a3b8;
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 10px;
+    }
+    .priority-card.urgence { border-left-color: #dc2626; background: #fef2f2; }
+    .priority-card.vigilance-renforcee { border-left-color: #ea580c; background: #fff7ed; }
+    .priority-card.a-surveiller { border-left-color: #ca8a04; background: #fefce8; }
+    .priority-topline {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 10px;
+        margin-bottom: 6px;
+    }
+    .priority-name { font-size: 1.02rem; font-weight: 700; color: #0f172a; }
+    .priority-class { font-size: 0.86rem; color: #475569; font-weight: 600; }
+    .priority-counts { font-size: 0.85rem; color: #334155; margin-bottom: 4px; }
+    .priority-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+    }
+    .priority-badge.urgence { background: #fee2e2; color: #991b1b; }
+    .priority-badge.vigilance-renforcee { background: #ffedd5; color: #9a3412; }
+    .priority-badge.a-surveiller { background: #fef9c3; color: #854d0e; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -296,6 +329,56 @@ def ensure_color_columns(pivot_df):
     return pivot_df
 
 
+def build_priority_students(df_f, col_eleve, col_classe, top_n=5):
+    focus_df = df_f[df_f["Couleur_Clean"].isin(["Jaune", "Orange", "Rouge"])].copy()
+    if focus_df.empty:
+        return pd.DataFrame()
+
+    latest_date = focus_df["Date_Clean"].max()
+    weights = {"Rouge": 5.0, "Orange": 3.0, "Jaune": 1.5}
+
+    days_since = (latest_date - focus_df["Date_Clean"]).dt.days.clip(lower=0)
+    focus_df["Recency_Factor"] = 1 / (1 + (days_since / 14))
+    focus_df["Weighted_Score"] = (
+        focus_df["Couleur_Clean"].map(weights).fillna(0) * focus_df["Recency_Factor"]
+    )
+
+    counts = (
+        focus_df.groupby([col_eleve, col_classe])["Couleur_Clean"]
+        .value_counts()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
+    counts = ensure_color_columns(counts)
+
+    score_by_student = (
+        focus_df.groupby([col_eleve, col_classe], as_index=False)["Weighted_Score"].sum()
+    )
+    last_obs = focus_df.groupby([col_eleve, col_classe], as_index=False)["Date_Clean"].max()
+
+    ranked = counts.merge(score_by_student, on=[col_eleve, col_classe], how="left").merge(
+        last_obs, on=[col_eleve, col_classe], how="left"
+    )
+    ranked = ranked.rename(columns={"Date_Clean": "Last_Observation"})
+    ranked["Jaune_Bonus"] = (ranked["Jaune"] >= 3).astype(float) * 1.0
+    ranked["Priority_Score"] = ranked["Weighted_Score"] + ranked["Jaune_Bonus"]
+
+    ranked = ranked.sort_values(
+        ["Priority_Score", "Rouge", "Orange", "Jaune", "Last_Observation"],
+        ascending=[False, False, False, False, False],
+    ).head(top_n)
+
+    def vigilance_label(row):
+        if row["Rouge"] >= 1 or row["Priority_Score"] >= 6:
+            return "urgence"
+        if row["Orange"] >= 2 or (row["Orange"] >= 1 and row["Jaune"] >= 2):
+            return "vigilance renforcée"
+        return "à surveiller"
+
+    ranked["Vigilance_Label"] = ranked.apply(vigilance_label, axis=1)
+    return ranked
+
+
 def format_weeks_context(weeks):
     if not weeks:
         return "Toutes les semaines disponibles"
@@ -453,6 +536,45 @@ def render_dashboard(df, df_f, cols):
                 },
             )
             st.plotly_chart(figp, use_container_width=True)
+
+        st.divider()
+        st.subheader("🎯 Priorités du moment")
+        st.caption(
+            "Classement des élèves nécessitant une attention rapide, basé sur les observations Jaune/Orange/Rouge récentes."
+        )
+
+        priority_df = build_priority_students(df_f, col_eleve, col_classe, top_n=5)
+        if priority_df.empty:
+            st.info("Aucune observation Jaune, Orange ou Rouge dans le filtre actif.")
+        else:
+            for _, row in priority_df.iterrows():
+                label = str(row["Vigilance_Label"])
+                label_css = (
+                    label.replace(" ", "-")
+                    .replace("é", "e")
+                    .replace("à", "a")
+                )
+                last_obs = row["Last_Observation"].strftime("%d/%m/%Y") if pd.notna(row["Last_Observation"]) else "N/A"
+                st.markdown(
+                    f"""
+                    <div class='priority-card {label_css}'>
+                        <div class='priority-topline'>
+                            <div>
+                                <div class='priority-name'>{row[col_eleve]}</div>
+                                <div class='priority-class'>Classe : {row[col_classe]}</div>
+                            </div>
+                            <span class='priority-badge {label_css}'>{label}</span>
+                        </div>
+                        <div class='priority-counts'>
+                            🔴 Rouge: <b>{int(row['Rouge'])}</b> &nbsp;•&nbsp;
+                            🟠 Orange: <b>{int(row['Orange'])}</b> &nbsp;•&nbsp;
+                            🟡 Jaune: <b>{int(row['Jaune'])}</b>
+                        </div>
+                        <div class='priority-class'>Dernière observation : {last_obs}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
         st.divider()
         st.subheader("🕒 Dernières observations")
