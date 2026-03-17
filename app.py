@@ -586,43 +586,74 @@ def render_dashboard(df, df_f, cols):
         k4.metric("Incidents", inc, delta="-Alertes", delta_color="inverse")
         st.divider()
 
-        st.subheader("🎯 Priorités du moment")
-        st.caption(
-            "Classement basé sur les observations Jaune/Orange/Rouge du filtre actif, avec priorité aux signaux récents et sévères."
-        )
+        col_priority, col_positive = st.columns(2)
 
-        priority_df = build_priority_students(df_f, col_eleve, col_classe, top_n=5)
-        if priority_df.empty:
-            st.info("Aucune observation Jaune, Orange ou Rouge dans le filtre actif.")
-        else:
-            for _, row in priority_df.iterrows():
-                label = str(row["Vigilance_Label"])
-                label_css = (
-                    label.replace(" ", "-")
-                    .replace("é", "e")
-                    .replace("à", "a")
+        with col_priority:
+            with st.container(border=True):
+                st.subheader("🎯 Priorités du moment")
+                st.caption(
+                    "Classement basé sur les observations Jaune/Orange/Rouge du filtre actif, en privilégiant les signaux récents et sévères."
                 )
-                last_obs = row["Last_Observation"].strftime("%d/%m/%Y") if pd.notna(row["Last_Observation"]) else "N/A"
-                st.markdown(
-                    f"""
-                    <div class='priority-card {label_css}'>
-                        <div class='priority-topline'>
-                            <div>
-                                <div class='priority-name'>{row[col_eleve]}</div>
-                                <div class='priority-class'>Classe : {row[col_classe]}</div>
+
+                priority_df = build_priority_students(df_f, col_eleve, col_classe, top_n=5)
+                if priority_df.empty:
+                    st.info("Aucune observation Jaune, Orange ou Rouge dans le filtre actif.")
+                else:
+                    for _, row in priority_df.iterrows():
+                        label = str(row["Vigilance_Label"])
+                        label_css = (
+                            label.replace(" ", "-")
+                            .replace("é", "e")
+                            .replace("à", "a")
+                        )
+                        last_obs = row["Last_Observation"].strftime("%d/%m/%Y") if pd.notna(row["Last_Observation"]) else "N/A"
+                        st.markdown(
+                            f"""
+                            <div class='priority-card {label_css}'>
+                                <div class='priority-topline'>
+                                    <div>
+                                        <div class='priority-name'>{row[col_eleve]}</div>
+                                        <div class='priority-class'>Classe : {row[col_classe]}</div>
+                                    </div>
+                                    <span class='priority-badge {label_css}'>{label}</span>
+                                </div>
+                                <div class='priority-counts'>
+                                    🔴 Rouge: <b>{int(row['Rouge'])}</b> &nbsp;•&nbsp;
+                                    🟠 Orange: <b>{int(row['Orange'])}</b> &nbsp;•&nbsp;
+                                    🟡 Jaune: <b>{int(row['Jaune'])}</b>
+                                </div>
+                                <div class='priority-class'>Dernière observation : {last_obs}</div>
                             </div>
-                            <span class='priority-badge {label_css}'>{label}</span>
-                        </div>
-                        <div class='priority-counts'>
-                            🔴 Rouge: <b>{int(row['Rouge'])}</b> &nbsp;•&nbsp;
-                            🟠 Orange: <b>{int(row['Orange'])}</b> &nbsp;•&nbsp;
-                            🟡 Jaune: <b>{int(row['Jaune'])}</b>
-                        </div>
-                        <div class='priority-class'>Dernière observation : {last_obs}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+        with col_positive:
+            with st.container(border=True):
+                st.subheader("🌱 Signaux positifs / améliorations")
+                st.caption("Élèves montrant une dynamique positive récente (sur les 3 dernières semaines disponibles).")
+
+                positive_df = build_positive_signals(df_f, col_eleve, col_classe, top_n=5)
+                if positive_df.empty:
+                    st.info("Aucun signal positif marquant à afficher sur la fenêtre récente.")
+                else:
+                    for _, row in positive_df.iterrows():
+                        last_obs = row["Last_Observation"].strftime("%d/%m/%Y") if pd.notna(row["Last_Observation"]) else "N/A"
+                        st.markdown(
+                            f"""
+                            <div class='vg-positive-card'>
+                                <div class='vg-positive-name'>{row[col_eleve]} · {row[col_classe]}</div>
+                                <div class='vg-positive-meta'>
+                                    🟢 Vert: <b>{int(row['Vert'])}</b> &nbsp;•&nbsp;
+                                    🟡 Jaune: <b>{int(row['Jaune'])}</b> &nbsp;•&nbsp;
+                                    🟠 Orange: <b>{int(row['Orange'])}</b> &nbsp;•&nbsp;
+                                    🔴 Rouge: <b>{int(row['Rouge'])}</b><br>
+                                    Dernière observation: {last_obs} &nbsp;•&nbsp; <b>{row['Positive_Label']}</b>
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 
         st.divider()
         c_pie, c_signals = st.columns([1, 2])
@@ -709,37 +740,17 @@ def render_dashboard(df, df_f, cols):
         c_latest, c_severe = st.columns(2)
         with c_latest:
             st.write("**5 dernières observations**")
-            st.dataframe(latest_observations[history_columns], use_container_width=True, hide_index=True)
+            if latest_observations.empty:
+                st.info("Aucune observation récente dans le filtre actif.")
+            else:
+                st.dataframe(latest_observations[history_columns], use_container_width=True, hide_index=True)
 
         with c_severe:
             st.write("**3 dernières observations graves**")
-            st.dataframe(latest_severe[history_columns], use_container_width=True, hide_index=True)
-
-        st.divider()
-        st.subheader("🌱 Signaux positifs / améliorations")
-        st.caption("Élèves montrant une dynamique positive récente (sur les 3 dernières semaines disponibles).")
-
-        positive_df = build_positive_signals(df_f, col_eleve, col_classe, top_n=5)
-        if positive_df.empty:
-            st.info("Aucun signal positif marquant à afficher sur la fenêtre récente.")
-        else:
-            for _, row in positive_df.iterrows():
-                last_obs = row["Last_Observation"].strftime("%d/%m/%Y") if pd.notna(row["Last_Observation"]) else "N/A"
-                st.markdown(
-                    f"""
-                    <div class='vg-positive-card'>
-                        <div class='vg-positive-name'>{row[col_eleve]} · {row[col_classe]}</div>
-                        <div class='vg-positive-meta'>
-                            🟢 Vert: <b>{int(row['Vert'])}</b> &nbsp;•&nbsp;
-                            🟡 Jaune: <b>{int(row['Jaune'])}</b> &nbsp;•&nbsp;
-                            🟠 Orange: <b>{int(row['Orange'])}</b> &nbsp;•&nbsp;
-                            🔴 Rouge: <b>{int(row['Rouge'])}</b><br>
-                            Dernière observation: {last_obs} &nbsp;•&nbsp; <b>{row['Positive_Label']}</b>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+            if latest_severe.empty:
+                st.info("Aucune observation Orange/Rouge sur la période filtrée.")
+            else:
+                st.dataframe(latest_severe[history_columns], use_container_width=True, hide_index=True)
 
     with t2:
         st.subheader("Analyse par Classe")
