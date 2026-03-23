@@ -1,5 +1,6 @@
 import os
 import re
+import unicodedata
 from collections import Counter
 
 import pandas as pd
@@ -153,7 +154,9 @@ def check_password():
 
 def load_raw_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
-    raw_df = conn.read(worksheet=RAW_WORKSHEET, ttl="30s")
+    force_refresh = st.session_state.pop("force_refresh_data", False)
+    ttl_value = 0 if force_refresh else "30s"
+    raw_df = conn.read(worksheet=RAW_WORKSHEET, ttl=ttl_value)
     if raw_df is None or raw_df.empty:
         raise ValueError(
             f"La feuille '{RAW_WORKSHEET}' est vide, inaccessible ou mal configurée."
@@ -233,6 +236,12 @@ def detect_columns(df):
     }
 
 
+def normalize_text(value):
+    text = str(value or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+
 def clean_data(df, cols):
     color_map = {
         "Vert": "Vert",
@@ -246,9 +255,16 @@ def clean_data(df, cols):
     }
 
     df = df.dropna(subset=[cols["eleve"], cols["date"], cols["color"]]).copy()
+    df[cols["eleve"]] = df[cols["eleve"]].astype(str).str.strip()
+    df[cols["classe"]] = df[cols["classe"]].astype(str).str.strip()
+    if cols["obs"] is not None and cols["obs"] in df.columns:
+        df[cols["obs"]] = df[cols["obs"]].astype(str).str.strip()
     df["Couleur_Clean"] = df[cols["color"]].map(color_map).fillna(df[cols["color"]])
     df["Date_Clean"] = pd.to_datetime(df[cols["date"]], dayfirst=True, errors="coerce")
     df = df.dropna(subset=["Date_Clean"]).copy()
+    df["Eleve_Clean"] = df[cols["eleve"]].apply(normalize_text)
+    df["Classe_Clean"] = df[cols["classe"]].apply(normalize_text)
+    df = df[df["Eleve_Clean"] != ""].copy()
     return df
 
 
@@ -306,6 +322,9 @@ def render_sidebar(df):
         st.caption(f"📄 Source: Google Sheets · Onglet `{RAW_WORKSHEET}`")
         st.caption("🔄 Données rafraîchies automatiquement toutes les 30 secondes.")
         if st.button("Actualiser maintenant", use_container_width=True):
+            st.rerun()
+        if st.button("Forcer rechargement Google Sheets", use_container_width=True):
+            st.session_state["force_refresh_data"] = True
             st.rerun()
 
         st.write("🔎 **Filtres Actifs**")
@@ -849,14 +868,20 @@ def render_dashboard(df, df_f, cols):
 
     with t6:
         st.subheader("👤 Dossier & Évolution")
-        eleves = sorted(df[col_eleve].astype(str).unique())
-        sel_eleve = st.selectbox("Rechercher un élève", eleves)
+        eleve_options = (
+            df.groupby("Eleve_Clean", as_index=False)[col_eleve]
+            .agg(lambda values: values.mode().iloc[0] if not values.mode().empty else values.iloc[0])
+            .sort_values(col_eleve)
+        )
+        eleve_labels = eleve_options[col_eleve].astype(str).tolist()
+        selected_label = st.selectbox("Rechercher un élève", eleve_labels)
+        selected_clean = normalize_text(selected_label)
 
         selected_period = st.session_state.get("selected_period")
         selected_weeks = st.session_state.get("selected_weeks", [])
 
-        de_filtered = df_f[df_f[col_eleve] == sel_eleve].copy().sort_values("Date_Clean", ascending=True)
-        de_full = df[df[col_eleve] == sel_eleve].copy().sort_values("Date_Clean", ascending=True)
+        de_filtered = df_f[df_f["Eleve_Clean"] == selected_clean].copy().sort_values("Date_Clean", ascending=True)
+        de_full = df[df["Eleve_Clean"] == selected_clean].copy().sort_values("Date_Clean", ascending=True)
 
         if de_filtered.empty:
             st.info("Aucune observation pour cet élève sur les filtres actuellement sélectionnés.")
@@ -913,13 +938,16 @@ def render_dashboard(df, df_f, cols):
                     de_full.sort_values("Date_Clean", ascending=False)[cols_final],
                     use_container_width=True,
                 )
+                with st.expander("Debug Dossier Élève (temporaire)", expanded=False):
+                    st.write("Nombre lignes dataset élève:", len(de_full))
+                    st.write(de_full.tail(10))
 
             st.divider()
             st.markdown("### 🧾 Résumé prêt à exploiter")
             st.caption("Bloc copiable pour préparer une analyse humaine assistée par IA (sans connexion API).")
             structured_summary, prompt_text = build_student_summary_block(
                 de_filtered,
-                sel_eleve,
+                selected_label,
                 selected_class,
                 selected_period,
                 selected_weeks,
