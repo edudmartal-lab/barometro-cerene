@@ -17,6 +17,10 @@ COLOR_CARD_STYLES = {
     "Orange": ("#e67e22", "#fff7ed"),
     "Rouge": ("#e74c3c", "#fef2f2"),
 }
+STUDENT_MATCH_MAP = {
+    # Correspondance temporaire contrôlée (normalisée, sans accents)
+    # Exemple: "maelle": ["calin maelle"]
+}
 
 # --- 1. CONFIGURACIÓN VISUAL ---
 st.set_page_config(
@@ -237,9 +241,35 @@ def detect_columns(df):
 
 
 def normalize_text(value):
-    text = str(value or "").strip().lower()
+    text = str(value or "")
     text = unicodedata.normalize("NFKD", text)
-    return "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def extract_firstname(clean_name):
+    tokens = str(clean_name or "").split()
+    if not tokens:
+        return ""
+    if len(tokens) == 1:
+        return tokens[0]
+    return tokens[-1]
+
+
+def resolve_student_rows(df_source, selected_clean):
+    exact_rows = df_source[df_source["Eleve_Clean"] == selected_clean].copy()
+    if not exact_rows.empty:
+        return exact_rows, "exact", [selected_clean]
+
+    mapped_aliases = [normalize_text(name) for name in STUDENT_MATCH_MAP.get(selected_clean, [])]
+    if mapped_aliases:
+        alias_rows = df_source[df_source["Eleve_Clean"].isin(mapped_aliases)].copy()
+        if not alias_rows.empty:
+            return alias_rows, "table_correspondance", mapped_aliases
+
+    return exact_rows, "aucun", [selected_clean]
 
 
 def clean_data(df, cols):
@@ -263,6 +293,7 @@ def clean_data(df, cols):
     df["Date_Clean"] = pd.to_datetime(df[cols["date"]], dayfirst=True, errors="coerce")
     df = df.dropna(subset=["Date_Clean"]).copy()
     df["Eleve_Clean"] = df[cols["eleve"]].apply(normalize_text)
+    df["Eleve_Firstname_Clean"] = df["Eleve_Clean"].apply(extract_firstname)
     df["Classe_Clean"] = df[cols["classe"]].apply(normalize_text)
     df = df[df["Eleve_Clean"] != ""].copy()
     return df
@@ -876,12 +907,23 @@ def render_dashboard(df, df_f, cols):
         eleve_labels = eleve_options[col_eleve].astype(str).tolist()
         selected_label = st.selectbox("Rechercher un élève", eleve_labels)
         selected_clean = normalize_text(selected_label)
+        selected_firstname = extract_firstname(selected_clean)
 
         selected_period = st.session_state.get("selected_period")
         selected_weeks = st.session_state.get("selected_weeks", [])
 
-        de_filtered = df_f[df_f["Eleve_Clean"] == selected_clean].copy().sort_values("Date_Clean", ascending=True)
-        de_full = df[df["Eleve_Clean"] == selected_clean].copy().sort_values("Date_Clean", ascending=True)
+        de_filtered, match_mode_filtered, filtered_keys = resolve_student_rows(df_f, selected_clean)
+        de_full, match_mode_full, full_keys = resolve_student_rows(df, selected_clean)
+        de_filtered = de_filtered.sort_values("Date_Clean", ascending=True)
+        de_full = de_full.sort_values("Date_Clean", ascending=True)
+
+        firstname_close = df[df["Eleve_Firstname_Clean"] == selected_firstname].copy()
+        firstname_variants = (
+            firstname_close.groupby([col_eleve, "Eleve_Clean"])
+            .size()
+            .reset_index(name="Occurrences")
+            .sort_values(["Occurrences", col_eleve], ascending=[False, True])
+        )
 
         if de_filtered.empty:
             st.info("Aucune observation pour cet élève sur les filtres actuellement sélectionnés.")
@@ -939,6 +981,18 @@ def render_dashboard(df, df_f, cols):
                     use_container_width=True,
                 )
                 with st.expander("Debug Dossier Élève (temporaire)", expanded=False):
+                    st.write("selected_label:", selected_label)
+                    st.write("selected_clean:", selected_clean)
+                    st.write("selected_firstname:", selected_firstname)
+                    st.write("matching_mode_filtered:", match_mode_filtered)
+                    st.write("matching_mode_full:", match_mode_full)
+                    st.write("matching_keys_filtered:", filtered_keys)
+                    st.write("matching_keys_full:", full_keys)
+                    st.write("lignes proches sur prénom:", len(firstname_close))
+                    if not firstname_variants.empty:
+                        st.dataframe(firstname_variants, use_container_width=True, hide_index=True)
+                    else:
+                        st.write("Aucune variante proche détectée sur le prénom.")
                     st.write("Nombre lignes dataset élève:", len(de_full))
                     st.write(de_full.tail(10))
 
